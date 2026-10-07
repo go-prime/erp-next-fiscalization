@@ -1,6 +1,8 @@
 # Copyright (c) 2024, Eskill Trading (Pvt) Ltd and contributors
 # For license information, please see license.txt
 
+from __future__ import annotations
+
 import datetime
 from typing import TYPE_CHECKING
 
@@ -12,9 +14,9 @@ from erpnext.selling.doctype.customer.customer import Customer
 from frappe.contacts.doctype.address.address import Address
 from frappe.contacts.doctype.contact.contact import Contact
 from frappe.model.document import Document
-from frappe.types import DF
 
 if TYPE_CHECKING:
+    from frappe.types import DF
     from erpnext_fiscalisation.fiscal_harmony_integration.doctype.fiscal_harmony_settings.fiscal_harmony_settings import (
         FiscalHarmonySettings,
     )
