@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import datetime
+import json
 from typing import TYPE_CHECKING
 
 import pytz
@@ -255,15 +256,23 @@ class FiscalSignature(Document):
             if tax_mapping.is_default:
                 default_tax_code = tax_mapping.tax_code
 
+        line_totals = self.__get_tax_inclusive_line_totals(transaction)
+
         line_items: list[dict] = []
         for item in transaction.items:
+            # The payload is always tax inclusive, so line values must carry
+            # their share of tax regardless of whether the invoice's taxes are
+            # included in the item rate. The rate already has any item
+            # discount applied, so no separate discount is sent.
+            quantity = abs(item.qty)
+            line_amount = line_totals[item.name]
             item_dict = {
                 "Description": item.item_name,
-                "UnitAmount": round(abs(item.rate), 3),
+                "UnitAmount": round(line_amount / quantity, 3) if quantity else line_amount,
                 "TaxCode": "S",
-                "LineAmount": round(abs(item.amount), 2),
-                "DiscountAmount": round(abs(item.discount_amount), 2) or None,
-                "Quantity": round(abs(item.qty), 3),
+                "LineAmount": line_amount,
+                "DiscountAmount": None,
+                "Quantity": round(quantity, 3),
             }
 
             # Work out the tax code, trying first for an item-specific tax code
@@ -318,6 +327,66 @@ class FiscalSignature(Document):
             line_items.append(item_dict)
 
         return line_items
+
+    def __get_tax_inclusive_line_totals(
+        self, transaction: SalesInvoice
+    ) -> dict[str, float]:
+        """Works out each item row's total including its share of tax.
+
+        ERPNext only records tax per item code (in company currency), so the
+        tax for an item code is split across its rows by net amount. Rounding
+        differences are absorbed by the largest line so that the line totals
+        add up to the invoice's grand total.
+
+        Args:
+            transaction (SalesInvoice): The Sales Invoice object being processed.
+
+        Returns:
+            dict[str, float]: The tax-inclusive total keyed by item row name."""
+
+        conversion_rate = transaction.conversion_rate or 1
+
+        tax_by_item_code: dict[str, float] = {}
+        for tax in transaction.taxes:
+            if tax.get("category") == "Valuation" or not tax.item_wise_tax_detail:
+                continue
+
+            for item_code, (_, tax_amount) in json.loads(
+                tax.item_wise_tax_detail
+            ).items():
+                tax_by_item_code[item_code] = (
+                    tax_by_item_code.get(item_code, 0.0)
+                    + tax_amount / conversion_rate
+                )
+
+        net_by_item_code: dict[str, float] = {}
+        for item in transaction.items:
+            item_code = item.item_code or item.item_name
+            net_by_item_code[item_code] = (
+                net_by_item_code.get(item_code, 0.0) + item.net_amount
+            )
+
+        line_totals: dict[str, float] = {}
+        for item in transaction.items:
+            item_code = item.item_code or item.item_name
+            item_code_net = net_by_item_code[item_code]
+            tax_share = (
+                tax_by_item_code.get(item_code, 0.0) * item.net_amount / item_code_net
+                if item_code_net
+                else 0.0
+            )
+            line_totals[item.name] = round(abs(item.net_amount + tax_share), 2)
+
+        rounding_difference = round(
+            abs(transaction.grand_total) - sum(line_totals.values()), 2
+        )
+        if rounding_difference and line_totals:
+            largest_line = max(line_totals, key=line_totals.get)
+            line_totals[largest_line] = round(
+                line_totals[largest_line] + rounding_difference, 2
+            )
+
+        return line_totals
 
     def __get_buyer_contact(self, transaction: SalesInvoice) -> dict[str]:
         """Returns a dictionary detailing the customer information.
