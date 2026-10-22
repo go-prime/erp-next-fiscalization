@@ -185,7 +185,7 @@ class FiscalSignature(Document):
             "InvoiceNumber": transaction.name,
             "Reference": transaction.po_no,
             "IsDiscounted": bool(transaction.is_discounted),
-            "IsTaxInclusive": True,
+            "IsTaxInclusive": _get_tax_inclusive(transaction),
             "BuyerContact": buyer_contact,
             "Date": self.__create_timestamp(
                 transaction.posting_date,
@@ -218,7 +218,7 @@ class FiscalSignature(Document):
             "CreditNoteNumber": transaction.name,
             "OriginalInvoiceId": transaction.return_against,
             "Reference": transaction.return_reason,
-            "IsTaxInclusive": True,
+            "IsTaxInclusive": _get_tax_inclusive(transaction),
             "BuyerContact": buyer_contact,
             "Date": self.__create_timestamp(
                 transaction.posting_date,
@@ -425,3 +425,32 @@ def _create_folder(folder_name: str, parent_folder: str = "Home") -> str:
     frappe.db.commit()
 
     return folder.name
+
+def _get_tax_inclusive(transaction: SalesInvoice) -> bool:
+    """Return whether the transaction's taxes are included in the item prices.
+
+    ZIMRA treats tax inclusivity as one setting per receipt, so every tax row must agree.
+    Rows with charge type "Actual" are ignored, as ERPNext never allows them to be inclusive.
+
+    Args:
+        transaction (SalesInvoice): The invoice or credit note being processed.
+
+    Returns:
+        bool: True if all tax rows are inclusive, False if all are exclusive or there are none."""
+
+    flags = {
+        bool(tax.included_in_print_rate)
+        for tax in transaction.taxes
+        if tax.charge_type != "Actual"
+    }
+
+    if len(flags) > 1:
+        frappe.throw(
+            f"Invoice {transaction.name} mixes tax-inclusive and tax-exclusive tax rows. "
+            "Fiscal invoices must be entirely one or the other. "
+            'Please make the "Is this Tax included in Basic Rate?" setting the same on every '
+            "tax row, then try again.",
+            title="Fiscalisation Error",
+        )
+
+    return flags.pop() if flags else False
